@@ -12,73 +12,116 @@
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
 
-from Agents.VQDQL import VQDQL
+from Agents.VQDQNL import VQDQNL
 from Agents.Qlearner import Qlearner
 from Agents.DQN import DQN
+from Agents.DDQN import DDQN
+from Agents.DQlearner import DQlearner
 from Framework.Configuration import Configuration
-from Framework.utils import plot
+import Framework.utils as utils
 from Framework.Evaluator import Evaluator
 from Framework.utils import get_num_states
 import gym
 import Environments.FL
+import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Activation
-from tensorflow.keras.optimizers import Adam
-import matplotlib.pyplot as plt
-from keras.models import Sequential
-from keras.layers import Dense, Activation
-from keras.optimizers import Adam
+from tensorflow.keras.losses import Huber
+from tensorflow.keras.models import clone_model
+from tensorflow.keras.utils import to_categorical
+from tensorflow.keras.optimizers import SGD
 from datetime import datetime
 import numpy as np
 import matplotlib.pyplot as plt
+from gym.envs.registration import register
+
+# Setup GPUs
+gpus = tf.config.experimental.list_physical_devices('GPU')
+if gpus:
+  try:
+    # Currently, memory growth needs to be the same across GPUs
+    for gpu in gpus:
+      tf.config.experimental.set_memory_growth(gpu, True)
+    logical_gpus = tf.config.experimental.list_logical_devices('GPU')
+    print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
+  except RuntimeError as e:
+    # Memory growth must be set before GPUs have been initialized
+    print(e)
 
 # Setup the environment containing
 env_name = 'FL-v1'
 env = gym.make(env_name)
 
+np.random.seed(2)
+env.action_space.np_random.seed(2)
+
 # Set the training parameters
-batch_size = 100
-nb_iterations = 5
+batch_size = 10
+nb_iterations = 750
 #alpha, gamma, epsilon
-training_params =[.1, .99, .9]
+cooling_schemes = [lambda x, iter: x, lambda x, iter: x, lambda x,iter: x*0.999]
+# memory
+memory_size = 80
+# target update
+target_replacement = 10
+
 #alpha, gamma, epsilon
-cooling_schemes = [lambda x, iter: x, lambda x, iter: x, lambda x,iter: x*(0.9999**iter)]
+training_params_Q = [.6, .8, .9]
 
 # Instantiate the trainer
-confVQD = Configuration(nb_iterations=nb_iterations, training_params=training_params, cooling_scheme=cooling_schemes,
-                        batch_size=batch_size, plot_training=True, average=int(batch_size/5))
+confQ = Configuration(nb_iterations=nb_iterations, training_params=training_params_Q, cooling_scheme=cooling_schemes,
+                        batch_size=1, average=int(batch_size/100), test_steps=1, verbosity_level=1e20)
 
-confQ = Configuration(nb_iterations=500, training_params=training_params, cooling_scheme=cooling_schemes,
-                        batch_size=1, plot_training=True, average=int(batch_size/100))
+
+#alpha, gamma, epsilon
+training_params_DQN = [.6, .8, .9] # DQN opt .1, .8, .9 overfitting nach 590
 
 # NN model for DQN
 num_states = get_num_states(env)
 model = Sequential()
 model.add(Dense(8, input_shape=(16, ), activation='tanh'))
-
 model.add(Dense(env.action_space.n, activation='linear'))
-print(model.summary())
+model.compile(loss=Huber(), optimizer=SGD(training_params_DQN[0]))
 
-iterations = 200000
-confDQN = Configuration(nb_iterations=iterations, training_params=training_params,
-                        cooling_scheme=[lambda x, iter: x, lambda x, iter: x,
-                                        lambda x, iter: x], batch_size=batch_size,
-                        plot_training=True, memory_size=300,
-                        average=int(batch_size/100))
-# TODO: average should depend on iterations not batch_size??-- discuss
-confDQN.model = model
-confDQN.target_replacement = 10
+confDQN = Configuration(nb_iterations=nb_iterations, training_params=training_params_DQN[1:],
+                        cooling_scheme=cooling_schemes[1:], batch_size=batch_size,
+                        memory_size=memory_size, average=int(nb_iterations/10), model=model,
+                        target_replacement=target_replacement, test_steps=1, verbosity_level=10)
 
-# Example to train two VQDQL agents
+confDQN.clone_model = clone_model
+confDQN.embedding = lambda state: to_categorical(state, num_classes=num_states).reshape(num_states)
 
-#agent = VQDQL(env, memory_size= 100, nb_variational_circuits=1, configuration=confVQD)
-#agent1 = Qlearner(env, debug=True, configuration=confQ)
-agent2 = DQN(env, debug=True, configuration=confDQN)
+training_params_VQDQN = [.22, .8, .9] # DQN opt .1, .8, .9 overfitting nach 590
+confVQD = Configuration(nb_iterations=nb_iterations, training_params=training_params_VQDQN, cooling_scheme=cooling_schemes,
+                        memory_size=memory_size, batch_size=batch_size, plot_training=False, average=int(batch_size/5), verbosity_level=10)
+confVQD.nb_variational_circuits=1
 
-total_rewards = agent2.evaluate(1)
-plt.plot(total_rewards)
-plt.show()
-print(np.mean(total_rewards))
+# Instantiate the agents
+#agent_Q = DQlearner(env, configuration=confQ)
+agent_DQN = DDQN(env, configuration=confDQN)
+#agent_VQDQN = VQDQNL(env, configuration=confVQD)
+
+agent_DQN.init_memory(agent_DQN.environment)
+
+# train them
+#start = datetime.now()
+#total_rewards_Q, eval_rewards_Q = agent_Q.train()
+#print(datetime.now() - start)
+#start = datetime.now()
+total_rewards_DQN, eval_rewards_DQN = agent_DQN.train()
+#print(datetime.now() - start)
+#total_rewards_VQDQN, eval_rewards_VQDQN = agent_VQDQN.train()
+
+#stats = utils.compute_stats([total_rewards_Q, total_rewards_DQN])
+#utils.plot_stats(stats, ['Q', 'DQN'], path='avg_return.png')
+
+#np.save(f'eval_rewards_Q', eval_rewards_Q)
+#np.save(f'eval_rewards_DQN', eval_rewards_DQN)
+
+# Plot results
+#utils.plot(eval_rewards_Q[:,0], average=10)
+utils.plot(eval_rewards_DQN[:,0],average=10)
+#utils.plot(eval_rewards_VQDQN[:,0],average=10)
 
 
 
