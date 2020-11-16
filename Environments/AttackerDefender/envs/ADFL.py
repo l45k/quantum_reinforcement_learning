@@ -6,7 +6,7 @@ from gym.envs.toy_text import discrete
 
 import sys
 from contextlib import closing
-import math
+import copy
 
 import numpy as np
 from six import StringIO, b
@@ -57,7 +57,9 @@ class ADFL(discrete.DiscreteEnv):
         if desc is None and map_name is None:
             desc = generate_random_map()
         elif desc is None:
-            desc = MAPS[map_name]
+            desc = copy.deepcopy(MAPS[map_name])
+
+        self.map_name = map_name
         self.desc = desc = np.asarray(desc, dtype='c')
         self.nrow, self.ncol = desc.shape
         self.reward_range = (0, 1)
@@ -116,6 +118,20 @@ class ADFL(discrete.DiscreteEnv):
         return row, col
 
     def reset(self):
+        if self.map_name is None:
+            desc = generate_random_map()
+        else:
+            desc = copy.deepcopy(MAPS[self.map_name])
+
+        self.desc = np.asarray(desc, dtype='c')
+        self.holes = []
+        for row in range(self.nrow):
+            for col in range(self.ncol):
+                s = self.to_s(row, col)
+                letter = self.desc[row, col]
+                if letter in b'H':
+                    self.holes.append(s)
+
         self.s_a = 0
         self.s_d = self.to_s_d(self.holes)
         self.lastaction_a = None
