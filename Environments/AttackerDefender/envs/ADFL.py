@@ -59,18 +59,25 @@ class ADFL(discrete.DiscreteEnv):
         elif desc is None:
             desc = copy.deepcopy(MAPS[map_name])
 
+        self.initial_desc = copy.deepcopy(desc)
+
         self.map_name = map_name
         self.desc = desc = np.asarray(desc, dtype='c')
         self.nrow, self.ncol = desc.shape
         self.reward_range = (0, 1)
-        self.max_episode_steps = 100
+        self.max_episode_steps = 100 if map_name == '4x4' else 1000
         self.num_steps = 0
         self.done = False
         self.successful_attack = False
 
+        self.lastaction_a = None
+        self.lastaction_d = None
+        self.lastplayer = None
+
         self.nA_a = 4
         self.nS_a = self.nrow * self.ncol
 
+        self.goal = np.nan
         self.holes = []
         for row in range(self.nrow):
             for col in range(self.ncol):
@@ -78,6 +85,8 @@ class ADFL(discrete.DiscreteEnv):
                 letter = desc[row, col]
                 if letter in b'H':
                     self.holes.append(s)
+                if letter in b'G':
+                    self.goal = s
 
         # Basically max_position**num_hole
         self.nS_d = np.sum([((self.ncol * self.nrow) - 1)**(j+1) for j in range(len(self.holes))])
@@ -91,7 +100,7 @@ class ADFL(discrete.DiscreteEnv):
 
         self.seed()
         self.s_a = 0
-        self.s_d = self.to_s_d(self.holes)
+        self.s_d = self.to_s_d()
 
     def seed(self, seed=None):
         self.np_random, seed = seeding.np_random(seed)
@@ -103,7 +112,7 @@ class ADFL(discrete.DiscreteEnv):
     def to_s(self, row, col):
         return row * self.ncol + col
 
-    def to_s_d(self, holes):
+    def to_s_d(self):
         return  np.sum([el * ((self.ncol * self.nrow) - 1)**j for j, el in enumerate(self.holes)])
 
     def inc(self, row, col, a):
@@ -118,12 +127,9 @@ class ADFL(discrete.DiscreteEnv):
         return row, col
 
     def reset(self):
-        if self.map_name is None:
-            desc = generate_random_map()
-        else:
-            desc = copy.deepcopy(MAPS[self.map_name])
+        self.desc = np.asarray(copy.deepcopy(self.initial_desc), dtype='c')
 
-        self.desc = np.asarray(desc, dtype='c')
+        self.goal = np.nan
         self.holes = []
         for row in range(self.nrow):
             for col in range(self.ncol):
@@ -131,14 +137,20 @@ class ADFL(discrete.DiscreteEnv):
                 letter = self.desc[row, col]
                 if letter in b'H':
                     self.holes.append(s)
+                if letter in b'G':
+                    self.goal = s
 
         self.s_a = 0
-        self.s_d = self.to_s_d(self.holes)
+        self.s_d = self.to_s_d()
         self.lastaction_a = None
         self.lastaction_d = None
         self.num_steps = 0
         self.done = False
         self.successful_attack = False
+        self.nA_d = len(self.holes) * 4
+        self.nS_d = np.sum([((self.ncol * self.nrow) - 1)**(j+1) for j in range(len(self.holes))])
+        self.action_space_d = spaces.Discrete(self.nA_d)
+        self.observation_space_d = spaces.Discrete(self.nS_d)
         return self.s_a, self.s_d
 
     def step_attacker(self, a):
@@ -158,7 +170,7 @@ class ADFL(discrete.DiscreteEnv):
             return self.s_a, 1., self.done, None
         return self.s_a, -.01, self.done, None
 
-    def step_defedenr(self, a):
+    def step_defender(self, a):
         hole = self.holes[int(a/4)]
         h_row, h_col = self.to_rc(hole)
         direction = int(a%4)
@@ -169,8 +181,8 @@ class ADFL(discrete.DiscreteEnv):
             n_h_row, n_h_col =h_row, h_col
         self.holes[int(a / 4)] = self.to_s(n_h_row, n_h_col)
         self.desc[h_row, h_col], self.desc[n_h_row, n_h_col] = self.desc[n_h_row, n_h_col], self.desc[h_row, h_col]
-        self.lastaction_b = a
-        self.s_d = self.to_s_d(self.holes)
+        self.lastaction_d = a
+        self.s_d = self.to_s_d()
         if self.done and self.successful_attack:
             return self.s_d, -.2, self.done, None
         if self.done and not self.successful_attack:
@@ -182,25 +194,27 @@ class ADFL(discrete.DiscreteEnv):
         if player == ATTACKER:
             return self.step_attacker(a)
         elif player == DEFENDER:
-            return self.step_defedenr(a)
+            return self.step_defender(a)
         else:
             raise Exception('Wrong player identifier')
 
     def render(self, mode='human'):
         outfile = StringIO() if mode == 'ansi' else sys.stdout
 
-        row, col = self.s // self.ncol, self.s % self.ncol
         desc = self.desc.tolist()
         desc = [[c.decode('utf-8') for c in line] for line in desc]
+        row, col = self.s_a // self.ncol, self.s_a % self.ncol
         desc[row][col] = utils.colorize(desc[row][col], "red", highlight=True)
-        if self.lastaction_a is not None:
-            outfile.write(f'Action Attacker {["Left", "Down", "Right", "Up"][self.lastaction_a]}\n')
-        else:
-            outfile.write("\n")
-        if self.lastaction_d is not None:
-            outfile.write(f'Action Defender  {["Left", "Down", "Right", "Up"][self.lastaction_d]}\n')
-        else:
-            outfile.write("\n")
+        row, col = self.goal // self.ncol, self.goal % self.ncol
+        desc[row][col] = utils.colorize(desc[row][col], "green", highlight=True)
+        for h in self.holes:
+            row, col = h // self.ncol, h % self.ncol
+            desc[row][col] = utils.colorize(desc[row][col], "blue", highlight=True)
+
+        if self.lastplayer == 0 and self.lastaction_a is not None:
+            outfile.write(f'Action Attacker: {["Left", "Down", "Right", "Up"][self.lastaction_a]}\n')
+        elif self.lastplayer == 1 and self.lastaction_d is not None:
+            outfile.write(f'Action Defender: Holes{[self.lastaction_d // 4]} {["Left", "Down", "Right", "Up"][self.lastaction_d % 4]}\n')
         outfile.write("\n".join(''.join(line) for line in desc) + "\n")
 
         if mode != 'human':
