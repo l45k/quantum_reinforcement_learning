@@ -144,6 +144,8 @@ class ADFL(discrete.DiscreteEnv):
         self.s_d = self.to_s_d()
         self.lastaction_a = None
         self.lastaction_d = None
+        self.lastplayer = None
+
         self.num_steps = 0
         self.done = False
         self.successful_attack = False
@@ -177,7 +179,7 @@ class ADFL(discrete.DiscreteEnv):
         n_h_row, n_h_col = self.inc(h_row, h_col, direction)
 
         # Don't move if its the goal or a hole
-        if self.desc[n_h_row][n_h_col] in b'GH':
+        if self.desc[n_h_row][n_h_col] in b'GH' or self.s_a == self.to_s(n_h_row, n_h_col):
             n_h_row, n_h_col =h_row, h_col
         self.holes[int(a / 4)] = self.to_s(n_h_row, n_h_col)
         self.desc[h_row, h_col], self.desc[n_h_row, n_h_col] = self.desc[n_h_row, n_h_col], self.desc[h_row, h_col]
